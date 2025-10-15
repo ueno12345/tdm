@@ -147,3 +147,9 @@ tdm -b $HOME/todo
 - Bash 4.0 以上推奨
 - `date` コマンドは GNU date を想定
 - ANSIカラーに対応したターミナル推奨
+
+---
+
+## ライセンス
+
+[MIT License](https://opensource.org/licenses/MIT)
