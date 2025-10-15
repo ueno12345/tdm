@@ -1,0 +1,303 @@
+#!/bin/bash
+# vim風TUI TODO管理ツール
+
+# ------------------------------
+# ヘルプ表示
+# ------------------------------
+show_help() {
+  cat <<EOF
+Usage: $0 [options]
+
+Options:
+  -h, --help        このヘルプを表示
+  -d YYYYMMDD       指定日でTODOを起動（デフォルト: 今日）
+  -b DIR            TODOファイル保存ベースディレクトリ指定（デフォルト: \$HOME/Documents/todo_list）
+
+TUI操作一覧:
+  j/k               上下移動
+  h/l               前日/翌日切替
+  Enter             選択中のタスク完了/未完了切替
+  -                 選択中のタスクを「見送り」に変更
+  1                 未完了 [ ] に変更
+  2                 高優先度 [!] に変更
+  3                 中優先度 [~] に変更
+  4                 低優先度 [.] に変更
+  a                 タスク追加（タグ選択 → 内容入力）
+  f                 フィルタ切替：全て / 未完了 / 完了
+  q                 保存して終了
+
+自動追加機能:
+  - ルーティンタスク（勤務形態に応じて自動追加）
+  - 前回未完了タスクをコピー
+  - 月報タスク（その月の最初の出勤日に自動追加）
+  - 週報タスク（その週の最初の出勤日に自動追加）
+EOF
+  exit 0
+}
+
+# ------------------------------
+# 引数処理
+# ------------------------------
+BASE_DIR="$HOME/Documents/todo_list"
+TODAY=$(date +%Y%m%d)
+WORK_TYPE="shukkin"
+FILTER_MODE="all"
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help) show_help ;;
+    -d) TODAY="$2"; shift 2 ;;
+    -b) BASE_DIR="$2"; shift 2 ;;
+    *) echo "Unknown option: $1"; show_help ;;
+  esac
+done
+
+YEAR_MONTH=${TODAY:0:6}
+TODO_DIR="$BASE_DIR/$YEAR_MONTH"
+mkdir -p "$TODO_DIR"
+
+TODO_FILE="$TODO_DIR/$TODAY.txt"
+NEW_FILE=false
+[[ ! -e "$TODO_FILE" ]] && NEW_FILE=true
+touch "$TODO_FILE"
+
+# ------------------------------
+# 前回未完了タスクコピー
+# ------------------------------
+copy_pending_from_last_file() {
+  [[ -s "$TODO_FILE" ]] && return
+  last_file=$(find "$BASE_DIR" -type f -name "*.txt" ! -path "$TODO_FILE" | sort | tail -n1)
+  [[ -z "$last_file" ]] && return
+  grep -v '^\[x\]' "$last_file" >> "$TODO_FILE"
+}
+
+copy_pending_from_last_file
+
+# ------------------------------
+# 勤務形態選択
+# ------------------------------
+echo "==============================="
+echo "勤務形態を選んでください:"
+echo "1: 出勤  2: 在宅  3: 出張"
+echo "==============================="
+read -rp "番号を入力: " type_choice
+case "$type_choice" in
+  1) WORK_TYPE="shukkin" ;;
+  2) WORK_TYPE="zaitaku" ;;
+  3) WORK_TYPE="syucchou" ;;
+  *) WORK_TYPE="shukkin" ;;
+esac
+
+# ------------------------------
+# 新規作成時にルーティン・月報・週報を追加
+# ------------------------------
+if $NEW_FILE; then
+  # ルーティンタスク
+  ROUTINE_FILE="$BASE_DIR/template/routine_${WORK_TYPE}.txt"
+  [[ -f "$ROUTINE_FILE" ]] && grep -Fxv -f "$TODO_FILE" "$ROUTINE_FILE" >> "$TODO_FILE"
+
+  # 月報：月の最初の出勤日に自動追加
+  DAY_NUM=$(date -d "$TODAY" +%d | sed 's/^0//')
+  if [[ $DAY_NUM -eq 1 ]]; then
+    echo "[!] 月報タスク" >> "$TODO_FILE"
+  fi
+
+  # 週報：その週の最初の出勤日に自動追加（平日扱い）
+  WEEKDAY=$(date -d "$TODAY" +%u) # 1=月曜
+  if [[ $WEEKDAY -eq 1 ]]; then
+    echo "[~] 週報タスク" >> "$TODO_FILE"
+  fi
+fi
+
+# ------------------------------
+# TUI関数
+# ------------------------------
+clear_screen() { printf "\033[2J\033[H"; }
+hide_cursor()  { printf "\033[?25l"; }
+show_cursor()  { printf "\033[?25h"; }
+
+read_tasks() { mapfile -t TASKS < "$TODO_FILE"; }
+
+draw_screen() {
+  clear_screen
+
+  # フィルタ適用
+  DISPLAY_TASKS=()
+  DISPLAY_INDEX_MAP=()
+  for i in "${!TASKS[@]}"; do
+    t="${TASKS[$i]}"
+    [[ -z "$t" ]] && continue
+    case "$FILTER_MODE" in
+      active) [[ "$t" =~ ^\[x\] ]] && continue ;;
+      done)   [[ ! "$t" =~ ^\[x\] ]] && continue ;;
+      all) ;;
+    esac
+    DISPLAY_TASKS+=("$t")
+    DISPLAY_INDEX_MAP+=("$i")
+  done
+
+  [[ ${#DISPLAY_TASKS[@]} -eq 0 ]] && DISPLAY_TASKS=("（タスクがありません）") && DISPLAY_INDEX_MAP=(0)
+  [[ $CURSOR -ge ${#DISPLAY_TASKS[@]} ]] && CURSOR=$((${#DISPLAY_TASKS[@]}-1))
+  [[ $CURSOR -lt 0 ]] && CURSOR=0
+
+  width=70
+  echo "======================================================="
+  printf "                    TODO LIST\n"
+  printf "           日付: %s  フィルタ: %s\n" "$TODAY" "$FILTER_MODE"
+  echo "-------------------------------------------------------"
+
+  for i in "${!DISPLAY_TASKS[@]}"; do
+    task="${DISPLAY_TASKS[$i]}"
+    prefix="   "
+    [ "$i" -eq "$CURSOR" ] && prefix="👉 "
+
+    case "$task" in
+      "[x]"*) color="\033[90m" ;;
+      "[-]"*) color="\033[36m" ;; # 見送りはシアン
+      "[!]"*) color="\033[31m" ;;
+      "[~]"*) color="\033[33m" ;;
+      "[.]"*) color="\033[34m" ;;
+      "[ ]"*) color="\033[0m" ;;
+      *) color="\033[0m" ;;
+    esac
+
+    echo -e "${prefix}${color}${task}\033[0m"
+  done
+
+  echo "-------------------------------------------------------"
+  echo "操作: [h/l]前日/翌日  [j/k]移動  [Enter]完了 [-]見送り "
+  echo "      [a]追加  [f]フィルタ  [q]終了"
+  echo "タグ: [x]完了  [ ]未完了  [-]見送り  [!]高  [~]中  [.]低"
+  echo "======================================================="
+}
+
+toggle_done() {
+  [[ ${#DISPLAY_TASKS[@]} -eq 0 ]] && return
+  line_index=${DISPLAY_INDEX_MAP[$CURSOR]}
+  line="${TASKS[$line_index]}"
+  case "$line" in
+    "[ ] "*| "[-]"*) TASKS[$line_index]="[x]${line:3}" ;;
+    "[x]"*) TASKS[$line_index]="[ ]${line:3}" ;;
+  esac
+}
+
+mark_pending() {
+  [[ ${#DISPLAY_TASKS[@]} -eq 0 ]] && return
+  line_index=${DISPLAY_INDEX_MAP[$CURSOR]}
+  TASKS[$line_index]="[-]${TASKS[$line_index]:3}"
+}
+
+delete_task() {
+  [[ ${#DISPLAY_TASKS[@]} -eq 0 ]] && return
+  line_index=${DISPLAY_INDEX_MAP[$CURSOR]}
+  unset 'TASKS[$line_index]'
+  TASKS=("${TASKS[@]}")
+  ((CURSOR>0)) && ((CURSOR--))
+}
+
+save_tasks() { printf "%s\n" "${TASKS[@]}" > "$TODO_FILE"; }
+
+add_task() {
+  show_cursor
+  echo "タグを選んでください:"
+  echo "1: [ ] 未完了  2: [!] 高  3: [~] 中  4: [.] 低  5: [-] 見送り"
+  read -rp "番号を入力 (デフォルト 1): " tag_choice
+  case "$tag_choice" in
+    2) tag="[!]" ;;
+    3) tag="[~]" ;;
+    4) tag="[.]" ;;
+    5) tag="[-]" ;;
+    *) tag="[ ]" ;;
+  esac
+  read -rp "タスク内容: " newtask
+  [[ -n "$newtask" ]] && echo "$tag $newtask" >> "$TODO_FILE" && read_tasks
+  hide_cursor
+}
+
+change_tag() {
+  [[ ${#DISPLAY_TASKS[@]} -eq 0 ]] && return
+  newtag=$1
+  line_index=${DISPLAY_INDEX_MAP[$CURSOR]}
+  TASKS[$line_index]="$newtag${TASKS[$line_index]:3}"
+}
+
+change_day_existing() {
+  direction=$1
+  CURRENT_YEAR_MONTH=${TODAY:0:6}
+  TODO_DIR="$BASE_DIR/$CURRENT_YEAR_MONTH"
+  mkdir -p "$TODO_DIR"
+
+  files=( $(ls "$TODO_DIR"/*.txt 2>/dev/null | sort) )
+  [[ ${#files[@]} -eq 0 ]] && return
+
+  dates=( "${files[@]##*/}" )
+  for i in "${!dates[@]}"; do dates[$i]="${dates[$i]%.txt}"; done
+
+  newdate=""
+  if [[ $direction == "prev" ]]; then
+    for d in "${dates[@]}"; do
+      [[ $d -lt $TODAY ]] && newdate=$d || break
+    done
+  elif [[ $direction == "next" ]]; then
+    for d in "${dates[@]}"; do
+      [[ $d -gt $TODAY ]] && { newdate=$d; break; }
+    done
+  fi
+
+  if [[ -n "$newdate" ]]; then
+    TODAY="$newdate"
+    YEAR_MONTH=${TODAY:0:6}
+    TODO_DIR="$BASE_DIR/$YEAR_MONTH"
+    TODO_FILE="$TODO_DIR/$TODAY.txt"
+    touch "$TODO_FILE"
+    read_tasks
+    CURSOR=0
+  fi
+}
+
+# ------------------------------
+# メインループ
+# ------------------------------
+main() {
+  read_tasks
+  CURSOR=0
+  hide_cursor
+  trap "show_cursor; clear_screen; exit" INT TERM
+
+  keybuf=""
+  while true; do
+    draw_screen
+    read -rsn1 key
+    keybuf+="$key"
+    [[ "$key" == $'\e' ]] && keybuf="" && continue
+
+    case "$keybuf" in
+      h) change_day_existing prev; keybuf="" ;;
+      l) change_day_existing next; keybuf="" ;;
+      j) ((CURSOR++)); ((CURSOR>=${#DISPLAY_TASKS[@]})) && CURSOR=$((${#DISPLAY_TASKS[@]}-1)); keybuf="" ;;
+      k) ((CURSOR--)); ((CURSOR<0)) && CURSOR=0; keybuf="" ;;
+      x) delete_task; keybuf="" ;;
+      "") toggle_done; keybuf="" ;;
+      -) mark_pending; keybuf="" ;;
+      a) add_task; keybuf="" ;;
+      f)
+         case "$FILTER_MODE" in
+           all) FILTER_MODE="active" ;;
+           active) FILTER_MODE="done" ;;
+           done) FILTER_MODE="all" ;;
+         esac
+         CURSOR=0
+         keybuf=""
+         ;;
+      1) change_tag "[ ]"; keybuf="" ;;
+      2) change_tag "[!]"; keybuf="" ;;
+      3) change_tag "[~]"; keybuf="" ;;
+      4) change_tag "[.]"; keybuf="" ;;
+      q) save_tasks; show_cursor; clear_screen; echo "終了しました。"; exit 0 ;;
+      *) [[ "${#keybuf}" -gt 2 ]] && keybuf="" ;;
+    esac
+  done
+}
+
+main
+
