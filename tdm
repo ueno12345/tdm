@@ -200,9 +200,10 @@ toggle_done() {
   [[ ${#DISPLAY_TASKS[@]} -eq 0 ]] && return
   line_index=${DISPLAY_INDEX_MAP[$CURSOR]}
   line="${TASKS[$line_index]}"
+  # どのタグでも完了 [x] にする
   case "$line" in
-    "[ ] "*| "[-]"*) TASKS[$line_index]="[x]${line:3}" ;;
-    "[x]"*) TASKS[$line_index]="[ ]${line:3}" ;;
+    "[x]"*) TASKS[$line_index]="[ ]${line:3}" ;;  # 完了なら未完了に戻す
+    *) TASKS[$line_index]="[x]${line:3}" ;;
   esac
   sort_tasks
 }
