@@ -29,8 +29,8 @@ TUI操作一覧:
 自動追加機能:
   - ルーティンタスク（勤務形態に応じて自動追加）
   - 前回未完了タスクをコピー
-  - 月報タスク（その月の最初の出勤日に自動追加）
-  - 週報タスク（その週の最初の出勤日に自動追加）
+  - 月報作成（その月の最初のファイル作成時に自動追加）
+  - 週報作成（その週の最初のファイル作成時に自動追加）
 EOF
   exit 0
 }
@@ -74,38 +74,44 @@ copy_pending_from_last_file() {
 copy_pending_from_last_file
 
 # ------------------------------
-# 勤務形態選択
-# ------------------------------
-echo "==============================="
-echo "勤務形態を選んでください:"
-echo "1: 出勤  2: 在宅  3: 出張"
-echo "==============================="
-read -rp "番号を入力: " type_choice
-case "$type_choice" in
-  1) WORK_TYPE="shukkin" ;;
-  2) WORK_TYPE="zaitaku" ;;
-  3) WORK_TYPE="syucchou" ;;
-  *) WORK_TYPE="shukkin" ;;
-esac
-
-# ------------------------------
 # 新規作成時にルーティン・月報・週報を追加
 # ------------------------------
 if $NEW_FILE; then
+  # ------------------------------
+  # 勤務形態選択
+  # ------------------------------
+  echo "==============================="
+  echo "勤務形態を選んでください:"
+  echo "1: 出勤  2: 在宅  3: 出張"
+  echo "==============================="
+  read -rp "番号を入力: " type_choice
+  case "$type_choice" in
+    1) WORK_TYPE="shukkin" ;;
+    2) WORK_TYPE="zaitaku" ;;
+    3) WORK_TYPE="syucchou" ;;
+    *) WORK_TYPE="shukkin" ;;
+  esac
+
   # ルーティンタスク
   ROUTINE_FILE="$BASE_DIR/template/routine_${WORK_TYPE}.txt"
   [[ -f "$ROUTINE_FILE" ]] && grep -Fxv -f "$TODO_FILE" "$ROUTINE_FILE" >> "$TODO_FILE"
 
-  # 月報：月の最初の出勤日に自動追加
-  DAY_NUM=$(date -d "$TODAY" +%d | sed 's/^0//')
-  if [[ $DAY_NUM -eq 1 ]]; then
-    echo "[!] 月報タスク" >> "$TODO_FILE"
+  # 月報（その月で最初のTODO作成時のみ）
+  MONTH_DIR="$BASE_DIR/${TODAY:0:6}"
+  FIRST_FILE_THIS_MONTH=$(ls "$MONTH_DIR"/*.txt 2>/dev/null | sort | head -n1)
+  if [[ "$FIRST_FILE_THIS_MONTH" == "$TODO_FILE" ]]; then
+    echo "[!] 月報作成" >> "$TODO_FILE"
   fi
 
-  # 週報：その週の最初の出勤日に自動追加（平日扱い）
-  WEEKDAY=$(date -d "$TODAY" +%u) # 1=月曜
-  if [[ $WEEKDAY -eq 1 ]]; then
-    echo "[~] 週報タスク" >> "$TODO_FILE"
+  # 週報（その週で最初のTODO作成時のみ）
+  THIS_WEEK=$(date -d "$TODAY" +%Y%V)
+  FIRST_FILE_THIS_WEEK=$(find "$BASE_DIR" -type f -name "*.txt" | sort |
+    while read -r f; do
+      filedate=$(basename "$f" .txt)
+      [[ $(date -d "$filedate" +%Y%V) == "$THIS_WEEK" ]] && { echo "$f"; break; }
+    done)
+  if [[ "$FIRST_FILE_THIS_WEEK" == "$TODO_FILE" ]]; then
+    echo "[~] 週報作成" >> "$TODO_FILE"
   fi
 fi
 
@@ -116,7 +122,26 @@ clear_screen() { printf "\033[2J\033[H"; }
 hide_cursor()  { printf "\033[?25l"; }
 show_cursor()  { printf "\033[?25h"; }
 
-read_tasks() { mapfile -t TASKS < "$TODO_FILE"; }
+# タスクの重要度でソート
+sort_tasks() {
+  mapfile -t TASKS < <(
+    printf "%s\n" "${TASKS[@]}" |
+      awk '
+        /^\[!\]/ {p=1}
+        /^\[~\]/ {p=2}
+        /^\[\.\]/ {p=3}
+        /^\[ \]/ {p=4}
+        /^\[-\]/ {p=5}
+        /^\[x\]/ {p=6}
+        {print p " " $0}
+      ' | sort -n | cut -d' ' -f2-
+  )
+}
+
+read_tasks() {
+  mapfile -t TASKS < "$TODO_FILE"
+  sort_tasks
+}
 
 draw_screen() {
   clear_screen
@@ -140,7 +165,6 @@ draw_screen() {
   [[ $CURSOR -ge ${#DISPLAY_TASKS[@]} ]] && CURSOR=$((${#DISPLAY_TASKS[@]}-1))
   [[ $CURSOR -lt 0 ]] && CURSOR=0
 
-  width=70
   echo "======================================================="
   printf "                    TODO LIST\n"
   printf "           日付: %s  フィルタ: %s\n" "$TODAY" "$FILTER_MODE"
@@ -153,7 +177,7 @@ draw_screen() {
 
     case "$task" in
       "[x]"*) color="\033[90m" ;;
-      "[-]"*) color="\033[36m" ;; # 見送りはシアン
+      "[-]"*) color="\033[36m" ;;
       "[!]"*) color="\033[31m" ;;
       "[~]"*) color="\033[33m" ;;
       "[.]"*) color="\033[34m" ;;
@@ -166,8 +190,9 @@ draw_screen() {
 
   echo "-------------------------------------------------------"
   echo "操作: [h/l]前日/翌日  [j/k]移動  [Enter]完了 [-]見送り "
-  echo "      [a]追加  [f]フィルタ  [q]終了"
-  echo "タグ: [x]完了  [ ]未完了  [-]見送り  [!]高  [~]中  [.]低"
+  echo "      [a]追加  [f]フィルタ  [1234]タグ追加  [q]終了"
+  echo "タグ: [x]完了  [ ]未完了(1) [!]高(2) [~]中(3)        "
+  echo "      [.]低(4) [-]見送り                              "
   echo "======================================================="
 }
 
@@ -179,12 +204,14 @@ toggle_done() {
     "[ ] "*| "[-]"*) TASKS[$line_index]="[x]${line:3}" ;;
     "[x]"*) TASKS[$line_index]="[ ]${line:3}" ;;
   esac
+  sort_tasks
 }
 
 mark_pending() {
   [[ ${#DISPLAY_TASKS[@]} -eq 0 ]] && return
   line_index=${DISPLAY_INDEX_MAP[$CURSOR]}
   TASKS[$line_index]="[-]${TASKS[$line_index]:3}"
+  sort_tasks
 }
 
 delete_task() {
@@ -195,7 +222,10 @@ delete_task() {
   ((CURSOR>0)) && ((CURSOR--))
 }
 
-save_tasks() { printf "%s\n" "${TASKS[@]}" > "$TODO_FILE"; }
+save_tasks() {
+  sort_tasks
+  printf "%s\n" "${TASKS[@]}" > "$TODO_FILE"
+}
 
 add_task() {
   show_cursor
@@ -219,6 +249,7 @@ change_tag() {
   newtag=$1
   line_index=${DISPLAY_INDEX_MAP[$CURSOR]}
   TASKS[$line_index]="$newtag${TASKS[$line_index]:3}"
+  sort_tasks
 }
 
 change_day_existing() {
@@ -235,8 +266,8 @@ change_day_existing() {
 
   newdate=""
   if [[ $direction == "prev" ]]; then
-    for d in "${dates[@]}"; do
-      [[ $d -lt $TODAY ]] && newdate=$d || break
+    for ((i=${#dates[@]}-1; i>=0; i--)); do
+      [[ ${dates[$i]} -lt $TODAY ]] && { newdate=${dates[$i]}; break; }
     done
   elif [[ $direction == "next" ]]; then
     for d in "${dates[@]}"; do
@@ -300,4 +331,3 @@ main() {
 }
 
 main
-
