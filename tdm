@@ -92,6 +92,13 @@ if $NEW_FILE; then
     *) WORK_TYPE="shukkin" ;;
   esac
 
+  # 前回作成ファイルから未完了タスクを引き継ぎ
+  PREV_FILE=$(find "$BASE_DIR" -type f -name "*.txt" | sort | grep -B1 "$TODO_FILE" | head -n1)
+  if [[ -f "$PREV_FILE" ]]; then
+    grep -E "^\[[^x]\]" "$PREV_FILE" >> "$TODO_FILE"
+    echo "" >> "$TODO_FILE"
+  fi
+
   # ルーティンタスク
   ROUTINE_FILE="$BASE_DIR/template/routine_${WORK_TYPE}.txt"
   [[ -f "$ROUTINE_FILE" ]] && grep -Fxv -f "$TODO_FILE" "$ROUTINE_FILE" >> "$TODO_FILE"
@@ -111,7 +118,7 @@ if $NEW_FILE; then
       [[ $(date -d "$filedate" +%Y%V) == "$THIS_WEEK" ]] && { echo "$f"; break; }
     done)
   if [[ "$FIRST_FILE_THIS_WEEK" == "$TODO_FILE" ]]; then
-    echo "[~] 週報作成" >> "$TODO_FILE"
+    echo "[!] 週報作成" >> "$TODO_FILE"
   fi
 fi
 
@@ -255,33 +262,32 @@ change_tag() {
 
 change_day_existing() {
   direction=$1
-  CURRENT_YEAR_MONTH=${TODAY:0:6}
-  TODO_DIR="$BASE_DIR/$CURRENT_YEAR_MONTH"
-  mkdir -p "$TODO_DIR"
 
-  files=( $(ls "$TODO_DIR"/*.txt 2>/dev/null | sort) )
+  # 全ての月のファイルを取得してソート
+  files=( $(find "$BASE_DIR" -type f -name "*.txt" | sort) )
   [[ ${#files[@]} -eq 0 ]] && return
 
-  dates=( "${files[@]##*/}" )
-  for i in "${!dates[@]}"; do dates[$i]="${dates[$i]%.txt}"; done
+  # 現在の日付ファイルパス
+  current_file="$TODO_FILE"
 
-  newdate=""
-  if [[ $direction == "prev" ]]; then
-    for ((i=${#dates[@]}-1; i>=0; i--)); do
-      [[ ${dates[$i]} -lt $TODAY ]] && { newdate=${dates[$i]}; break; }
-    done
-  elif [[ $direction == "next" ]]; then
-    for d in "${dates[@]}"; do
-      [[ $d -gt $TODAY ]] && { newdate=$d; break; }
-    done
-  fi
+  # 全ファイルの中で現在位置を探す
+  for i in "${!files[@]}"; do
+    if [[ "${files[$i]}" == "$current_file" ]]; then
+      if [[ $direction == "prev" && $i -gt 0 ]]; then
+        newfile="${files[$((i-1))]}"
+      elif [[ $direction == "next" && $i -lt $((${#files[@]}-1)) ]]; then
+        newfile="${files[$((i+1))]}"
+      fi
+      break
+    fi
+  done
 
-  if [[ -n "$newdate" ]]; then
-    TODAY="$newdate"
+  # 新しい日付に切り替え
+  if [[ -n "$newfile" ]]; then
+    TODAY=$(basename "$newfile" .txt)
     YEAR_MONTH=${TODAY:0:6}
     TODO_DIR="$BASE_DIR/$YEAR_MONTH"
-    TODO_FILE="$TODO_DIR/$TODAY.txt"
-    touch "$TODO_FILE"
+    TODO_FILE="$newfile"
     read_tasks
     CURSOR=0
   fi
